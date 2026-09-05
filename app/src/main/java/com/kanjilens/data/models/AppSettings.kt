@@ -35,6 +35,7 @@ class AppSettings(context: Context) {
         const val MODEL_CUSTOM = 5
 
         private const val KEY_OUTPUT_LANGUAGE = "output_language"
+        private const val KEY_SOURCE_LANGUAGE = "source_language"
         private const val KEY_CROP_LEFT = "crop_left"
         private const val KEY_CROP_TOP = "crop_top"
         private const val KEY_CROP_RIGHT = "crop_right"
@@ -48,6 +49,7 @@ class AppSettings(context: Context) {
         private const val KEY_CUSTOM_MODEL = "custom_model"
         private const val KEY_CUSTOM_VISION = "custom_vision"
 
+        const val LANG_JAPANESE = "ja"
         const val LANG_ENGLISH = "en"
         const val LANG_SPANISH = "es"
         const val LANG_PORTUGUESE = "pt"
@@ -72,6 +74,37 @@ class AppSettings(context: Context) {
 
         fun languageDisplayName(code: String): String =
             OUTPUT_LANGUAGES.firstOrNull { it.first == code }?.second ?: "English"
+
+        // OCR script bundles. ML Kit ships one recogniser per script; the Latin
+        // recogniser is the base artifact and covers every Latin-script language.
+        const val SCRIPT_JAPANESE = "japanese"
+        const val SCRIPT_CHINESE = "chinese"
+        const val SCRIPT_KOREAN = "korean"
+        const val SCRIPT_LATIN = "latin"
+
+        /**
+         * A language the app can read off the screen. [ocrScript] selects the ML Kit
+         * recogniser, [code] is the ML Kit Translate source language.
+         */
+        data class SourceLanguage(val code: String, val displayName: String, val ocrScript: String)
+
+        val SOURCE_LANGUAGES = listOf(
+            SourceLanguage(LANG_JAPANESE, "Japanese", SCRIPT_JAPANESE),
+            SourceLanguage(LANG_CHINESE, "Chinese", SCRIPT_CHINESE),
+            SourceLanguage(LANG_KOREAN, "Korean", SCRIPT_KOREAN),
+            SourceLanguage(LANG_ENGLISH, "English", SCRIPT_LATIN),
+            SourceLanguage(LANG_SPANISH, "Spanish", SCRIPT_LATIN),
+            SourceLanguage(LANG_FRENCH, "French", SCRIPT_LATIN),
+            SourceLanguage(LANG_GERMAN, "German", SCRIPT_LATIN),
+            SourceLanguage(LANG_ITALIAN, "Italian", SCRIPT_LATIN),
+            SourceLanguage(LANG_PORTUGUESE, "Portuguese", SCRIPT_LATIN),
+        )
+
+        fun sourceLanguageDisplayName(code: String): String =
+            SOURCE_LANGUAGES.firstOrNull { it.code == code }?.displayName ?: "Japanese"
+
+        fun ocrScriptFor(code: String): String =
+            SOURCE_LANGUAGES.firstOrNull { it.code == code }?.ocrScript ?: SCRIPT_JAPANESE
     }
 
     private val prefs: SharedPreferences =
@@ -118,6 +151,9 @@ class AppSettings(context: Context) {
 
     private val _outputLanguage = MutableStateFlow(prefs.getString(KEY_OUTPUT_LANGUAGE, LANG_ENGLISH) ?: LANG_ENGLISH)
     val outputLanguage: StateFlow<String> = _outputLanguage
+
+    private val _sourceLanguage = MutableStateFlow(prefs.getString(KEY_SOURCE_LANGUAGE, LANG_JAPANESE) ?: LANG_JAPANESE)
+    val sourceLanguage: StateFlow<String> = _sourceLanguage
 
     // Crop region stored as percentages (0f..1f)
     private val _cropEnabled = MutableStateFlow(prefs.getBoolean(KEY_CROP_ENABLED, false))
@@ -196,6 +232,11 @@ class AppSettings(context: Context) {
     fun setOutputLanguage(lang: String) {
         _outputLanguage.value = lang
         prefs.edit().putString(KEY_OUTPUT_LANGUAGE, lang).apply()
+    }
+
+    fun setSourceLanguage(lang: String) {
+        _sourceLanguage.value = lang
+        prefs.edit().putString(KEY_SOURCE_LANGUAGE, lang).apply()
     }
 
     fun setOllamaUrl(url: String) {

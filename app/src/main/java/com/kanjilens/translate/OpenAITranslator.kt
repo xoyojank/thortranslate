@@ -22,7 +22,8 @@ import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 
 sealed class TranslateResult {
-    data class Success(val text: String) : TranslateResult()
+    /** [original] is the recognised source text, only set by offline translation. */
+    data class Success(val text: String, val original: String? = null) : TranslateResult()
     data class Error(val message: String) : TranslateResult()
 }
 
@@ -34,6 +35,9 @@ class ScreenTranslator(
         const val STYLE_AUTO = 0
         const val STYLE_TRANSLATE_ONLY = 1
         const val STYLE_TRANSLATE_AND_EXPLAIN = 2
+
+        /** Upper bound on characters handed to ML Kit in a single translate() call. */
+        private const val MAX_TRANSLATE_CHARS = 2000
     }
 
     private val client = OkHttpClient.Builder()
@@ -42,10 +46,14 @@ class ScreenTranslator(
         .build()
 
     private var mlKitTranslator: com.google.mlkit.nl.translate.Translator? = null
-    private var mlKitCurrentTargetLang: String? = null
+    private var mlKitCurrentLangPair: String? = null
+
+    private fun langPair(source: String, target: String): String =
+        "${mlKitLanguageCode(source)}->${mlKitLanguageCode(target)}"
 
     private fun mlKitLanguageCode(appLangCode: String): String {
         return when (appLangCode) {
+            AppSettings.LANG_JAPANESE -> TranslateLanguage.JAPANESE
             AppSettings.LANG_ENGLISH -> TranslateLanguage.ENGLISH
             AppSettings.LANG_SPANISH -> TranslateLanguage.SPANISH
             AppSettings.LANG_PORTUGUESE -> TranslateLanguage.PORTUGUESE
@@ -59,20 +67,23 @@ class ScreenTranslator(
         }
     }
 
-    suspend fun ensureOfflineModelReady(targetLang: String = AppSettings.LANG_ENGLISH) {
-        val mlKitLang = mlKitLanguageCode(targetLang)
-        if (mlKitTranslator != null && mlKitCurrentTargetLang == mlKitLang) return
+    suspend fun ensureOfflineModelReady(
+        sourceLanguage: String = AppSettings.LANG_JAPANESE,
+        targetLang: String = AppSettings.LANG_ENGLISH,
+    ) {
+        val pair = langPair(sourceLanguage, targetLang)
+        if (mlKitTranslator != null && mlKitCurrentLangPair == pair) return
         withContext(Dispatchers.IO) {
             mlKitTranslator?.close()
             val options = TranslatorOptions.Builder()
-                .setSourceLanguage(TranslateLanguage.JAPANESE)
-                .setTargetLanguage(mlKitLang)
+                .setSourceLanguage(mlKitLanguageCode(sourceLanguage))
+                .setTargetLanguage(mlKitLanguageCode(targetLang))
                 .build()
             val translator = Translation.getClient(options)
             val conditions = DownloadConditions.Builder().build()
             translator.downloadModelIfNeeded(conditions).await()
             mlKitTranslator = translator
-            mlKitCurrentTargetLang = mlKitLang
+            mlKitCurrentLangPair = pair
         }
     }
 
@@ -82,6 +93,7 @@ class ScreenTranslator(
         style: Int = STYLE_AUTO,
         model: Int = AppSettings.MODEL_GPT4O_MINI,
         outputLanguage: String = AppSettings.LANG_ENGLISH,
+        sourceLanguage: String = AppSettings.LANG_JAPANESE,
         ollamaUrl: String = "",
         ollamaModel: String = "",
         ollamaVision: Boolean = true,
@@ -93,8 +105,8 @@ class ScreenTranslator(
     ): TranslateResult {
         return withContext(Dispatchers.IO) {
             try {
-                if (model == AppSettings.MODEL_MLKIT_OFFLINE) {
-                    return@withContext translateOffline(bitmap, outputLanguage, onDownloading)
+                if (model == AppSettings.MODEL_MLKIT_OFFLINE || model == AppSettings.MODEL_MLKIT_OFFLINE_AUTO) {
+                    return@withContext translateOffline(bitmap, sourceLanguage, outputLanguage, onDownloading)
                 }
 
                 if (model == AppSettings.MODEL_OLLAMA || model == AppSettings.MODEL_CUSTOM) {
@@ -109,7 +121,10 @@ class ScreenTranslator(
                     val prompt = getSystemPrompt(style, outputLanguage)
 
                     val base64 = if (vision) bitmapToBase64(bitmap) else ""
-                    val ocrText = if (!vision) textRecognizer.recognizeText(bitmap) else null
+                    val ocrText = if (!vision) {
+                        textRecognizer.setScript(AppSettings.ocrScriptFor(sourceLanguage))
+                        textRecognizer.recognizeText(bitmap)
+                    } else null
 
                     val result = callOpenAICompatible(base64, endpoint, key, modelName, vision, prompt, ocrText)
                     return@withContext if (result != null) {
@@ -145,9 +160,12 @@ class ScreenTranslator(
 
     private suspend fun translateOffline(
         bitmap: Bitmap,
+        sourceLanguage: String = AppSettings.LANG_JAPANESE,
         outputLanguage: String = AppSettings.LANG_ENGLISH,
         onDownloading: (() -> Unit)? = null,
     ): TranslateResult {
+        textRecognizer.setScript(AppSettings.ocrScriptFor(sourceLanguage))
+
         val blocks = textRecognizer.recognizeTextBlocks(bitmap)
             ?: return TranslateResult.Error("No text found in screenshot")
 
@@ -155,13 +173,14 @@ class ScreenTranslator(
             return TranslateResult.Error("No text found in screenshot")
         }
 
-        val needsDownload = mlKitTranslator == null || mlKitCurrentTargetLang != mlKitLanguageCode(outputLanguage)
+        val needsDownload =
+            mlKitTranslator == null || mlKitCurrentLangPair != langPair(sourceLanguage, outputLanguage)
         if (needsDownload) {
             withContext(Dispatchers.Main) { onDownloading?.invoke() }
         }
 
         try {
-            ensureOfflineModelReady(outputLanguage)
+            ensureOfflineModelReady(sourceLanguage, outputLanguage)
         } catch (e: Exception) {
             return TranslateResult.Error("Download the offline model first. Connect to WiFi and try again.")
         }
@@ -169,18 +188,41 @@ class ScreenTranslator(
         val translator = mlKitTranslator
             ?: return TranslateResult.Error("Offline translator not available")
 
+        val originalText = blocks.joinToString("\n")
+
         return try {
-            val result = StringBuilder()
-            for (block in blocks) {
-                val translated = translator.translate(block).await()
-                result.appendLine(block)
-                result.appendLine(translated)
-                result.appendLine()
+            // Translate the whole screen as a single text so the model sees the
+            // full context. Translating block by block loses pronouns, tense and
+            // register, which is very visible in Japanese and Chinese output.
+            val translated = StringBuilder()
+            for (chunk in chunkForTranslation(blocks)) {
+                if (translated.isNotEmpty()) translated.append('\n')
+                translated.append(translator.translate(chunk).await())
             }
-            TranslateResult.Success(result.toString().trimEnd())
+
+            TranslateResult.Success(text = translated.toString().trim(), original = originalText)
         } catch (e: Exception) {
             TranslateResult.Error("Offline translation failed: ${e.message ?: "unknown error"}")
         }
+    }
+
+    /**
+     * Joins blocks into as few chunks as possible, splitting only once a chunk
+     * would exceed [MAX_TRANSLATE_CHARS]. Never splits inside a block.
+     */
+    private fun chunkForTranslation(blocks: List<String>): List<String> {
+        val chunks = mutableListOf<String>()
+        val current = StringBuilder()
+        for (block in blocks) {
+            if (current.isNotEmpty() && current.length + block.length + 1 > MAX_TRANSLATE_CHARS) {
+                chunks.add(current.toString())
+                current.clear()
+            }
+            if (current.isNotEmpty()) current.append('\n')
+            current.append(block)
+        }
+        if (current.isNotEmpty()) chunks.add(current.toString())
+        return chunks
     }
 
     private fun callOpenAI(base64Image: String, apiKey: String, systemPrompt: String): String? {

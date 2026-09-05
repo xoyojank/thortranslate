@@ -15,6 +15,8 @@ data class AnalysisResult(
 
 data class TranslationResult(
     val translation: String,
+    /** Recognised source text, set when offline translation batched the screen. */
+    val originalText: String? = null,
 )
 
 sealed class CaptureState {

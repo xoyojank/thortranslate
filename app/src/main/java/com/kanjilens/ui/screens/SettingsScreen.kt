@@ -62,6 +62,7 @@ fun SettingsScreen(
     val customModel by settings.customModel.collectAsState()
     val customVision by settings.customVision.collectAsState()
     val outputLanguage by settings.outputLanguage.collectAsState()
+    val sourceLanguage by settings.sourceLanguage.collectAsState()
 
     var openaiKeyInput by remember { mutableStateOf(openaiApiKey) }
     var geminiKeyInput by remember { mutableStateOf(geminiApiKey) }
@@ -430,6 +431,47 @@ fun SettingsScreen(
                         )
                     }
                 }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+
+            // Source Language
+            var sourceLangMenuExpanded by remember { mutableStateOf(false) }
+            SettingsSection(title = "Source Language") {
+                Box {
+                    Text(
+                        text = AppSettings.sourceLanguageDisplayName(sourceLanguage),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.primary)
+                            .clickable { sourceLangMenuExpanded = true }
+                            .padding(vertical = 12.dp, horizontal = 16.dp),
+                    )
+                    DropdownMenu(
+                        expanded = sourceLangMenuExpanded,
+                        onDismissRequest = { sourceLangMenuExpanded = false },
+                    ) {
+                        AppSettings.SOURCE_LANGUAGES.forEach { lang ->
+                            DropdownMenuItem(
+                                text = { Text(lang.displayName) },
+                                onClick = {
+                                    settings.setSourceLanguage(lang.code)
+                                    sourceLangMenuExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+                Text(
+                    text = "Language of the game. Selects the on-device OCR model and the offline translation source. AI models detect the language on their own.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
             }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)

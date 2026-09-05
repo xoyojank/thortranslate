@@ -20,6 +20,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -90,6 +91,7 @@ fun MainScreen(
     val openaiKey by settings.openaiApiKey.collectAsState()
     val geminiKey by settings.geminiApiKey.collectAsState()
     val outputLanguage by settings.outputLanguage.collectAsState()
+    val sourceLanguage by settings.sourceLanguage.collectAsState()
     val cropEnabled by settings.cropEnabled.collectAsState()
     val apiKey = when (aiModel) {
         AppSettings.MODEL_GEMINI_FLASH -> geminiKey
@@ -154,6 +156,8 @@ fun MainScreen(
             val bitmap = cropBitmap(fullBitmap)
             onDictionaryStateChange(CaptureState.Processing)
 
+            // Dictionary mode is Japanese only (Kuromoji + JMDict).
+            textRecognizer.setScript(AppSettings.SCRIPT_JAPANESE)
             val recognizedText = textRecognizer.recognizeText(bitmap)
             if (recognizedText != null) {
                 val tokens = tokenizer.tokenize(recognizedText)
@@ -193,6 +197,7 @@ fun MainScreen(
 
             when (val result = translator.translateScreen(
                 bitmap, apiKey, translateStyle, aiModel, outputLanguage,
+                sourceLanguage = sourceLanguage,
                 onDownloading = { onTranslateStateChange(CaptureState.DownloadingModel) },
                 ollamaUrl = settings.ollamaUrl.value,
                 ollamaModel = settings.ollamaModel.value,
@@ -204,7 +209,7 @@ fun MainScreen(
             )) {
                 is TranslateResult.Success -> {
                     onTranslateStateChange(CaptureState.TranslateSuccess(
-                        TranslationResult(translation = result.text)
+                        TranslationResult(translation = result.text, originalText = result.original)
                     ))
                 }
                 is TranslateResult.Error -> {
@@ -222,47 +227,48 @@ fun MainScreen(
         }
     }
 
-    fun doAutoTranslateCycle() {
-        scope.launch {
-            val fullBitmap = captureManager.captureScreen() ?: return@launch
+    suspend fun doAutoTranslateCycle() {
+        val fullBitmap = captureManager.captureScreen() ?: return
 
-            val bitmap = cropBitmap(fullBitmap)
+        val bitmap = cropBitmap(fullBitmap)
 
-            // Get OCR text first for dedup
-            val blocks = textRecognizer.recognizeTextBlocks(bitmap)
-            if (blocks.isNullOrEmpty()) return@launch
+        // Get OCR text first for dedup
+        textRecognizer.setScript(AppSettings.ocrScriptFor(sourceLanguage))
+        val blocks = textRecognizer.recognizeTextBlocks(bitmap)
+        if (blocks.isNullOrEmpty()) return
 
-            val currentText = blocks.joinToString("")
-                .filter { c -> c.code > 0x3000 } // Keep only CJK chars for dedup
+        // Compare the full recognised text; filtering to CJK only would make
+        // every Latin-script screen look empty and never trigger a translate.
+        val currentText = blocks.joinToString("\n")
 
-            if (currentText.isEmpty()) return@launch
+        if (currentText.isBlank()) return
 
-            if (!isSignificantChange(lastOcrText ?: "", currentText)) {
-                return@launch // Text hasn't changed, skip
+        if (!isSignificantChange(lastOcrText ?: "", currentText)) {
+            return // Text hasn't changed, skip
+        }
+        lastOcrText = currentText
+
+        onTranslateStateChange(CaptureState.Processing)
+
+        when (val result = translator.translateScreen(
+            bitmap, "", AppSettings.TRANSLATE_STYLE_AUTO, AppSettings.MODEL_MLKIT_OFFLINE, outputLanguage,
+            sourceLanguage = sourceLanguage,
+            onDownloading = { onTranslateStateChange(CaptureState.DownloadingModel) },
+            ollamaUrl = settings.ollamaUrl.value,
+            ollamaModel = settings.ollamaModel.value,
+            ollamaVision = settings.ollamaVision.value,
+            customUrl = settings.customUrl.value,
+            customApiKey = settings.customApiKey.value,
+            customModel = settings.customModel.value,
+            customVision = settings.customVision.value,
+        )) {
+            is TranslateResult.Success -> {
+                onTranslateStateChange(CaptureState.TranslateSuccess(
+                    TranslationResult(translation = result.text, originalText = result.original)
+                ))
             }
-            lastOcrText = currentText
-
-            onTranslateStateChange(CaptureState.Processing)
-
-            when (val result = translator.translateScreen(
-                bitmap, "", AppSettings.TRANSLATE_STYLE_AUTO, AppSettings.MODEL_MLKIT_OFFLINE, outputLanguage,
-                onDownloading = { onTranslateStateChange(CaptureState.DownloadingModel) },
-                ollamaUrl = settings.ollamaUrl.value,
-                ollamaModel = settings.ollamaModel.value,
-                ollamaVision = settings.ollamaVision.value,
-                customUrl = settings.customUrl.value,
-                customApiKey = settings.customApiKey.value,
-                customModel = settings.customModel.value,
-                customVision = settings.customVision.value,
-            )) {
-                is TranslateResult.Success -> {
-                    onTranslateStateChange(CaptureState.TranslateSuccess(
-                        TranslationResult(translation = result.text)
-                    ))
-                }
-                is TranslateResult.Error -> {
-                    onTranslateStateChange(CaptureState.Error(result.message))
-                }
+            is TranslateResult.Error -> {
+                onTranslateStateChange(CaptureState.Error(result.message))
             }
         }
     }
@@ -271,6 +277,8 @@ fun MainScreen(
         if (autoJob?.isActive == true) return
         lastOcrText = null
         autoJob = scope.launch {
+            // Awaited, so cycles never overlap. Overlapping cycles would race on
+            // the shared TextRecognizer and could close it mid-recognition.
             while (true) {
                 if (captureManager.isReady) {
                     doAutoTranslateCycle()
@@ -500,7 +508,9 @@ fun MainScreen(
             // Mode toggle
             ModeToggle(
                 currentMode = appMode,
-                onModeChange = { settings.setAppMode(it) },
+                // Leaving Translate mode must stop the auto loop, otherwise it
+                // keeps capturing and racing with the dictionary OCR.
+                onModeChange = { stopAutoMode(); settings.setAppMode(it) },
             )
 
             Box(
@@ -579,39 +589,26 @@ fun MainScreen(
                             AppSettings.TEXT_SIZE_LARGE -> 20.sp
                             else -> 16.sp
                         }
-                        if (aiModel == AppSettings.MODEL_MLKIT_OFFLINE || aiModel == AppSettings.MODEL_MLKIT_OFFLINE_AUTO) {
-                            // Offline: show blocks with JP original + EN translation
-                            Column {
-                                val lines = state.result.translation.split("\n")
-                                var i = 0
-                                while (i < lines.size) {
-                                    val line = lines[i].trim()
-                                    if (line.isEmpty()) {
-                                        i++
-                                        continue
-                                    }
-                                    // JP original line
-                                    Text(
-                                        text = line,
-                                        fontSize = translateFontSize,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        lineHeight = translateFontSize * 1.4,
-                                    )
-                                    // EN translation line (next line if exists)
-                                    if (i + 1 < lines.size && lines[i + 1].trim().isNotEmpty()) {
-                                        Text(
-                                            text = lines[i + 1].trim(),
-                                            fontSize = translateFontSize,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            lineHeight = translateFontSize * 1.4,
-                                        )
-                                        i += 2
-                                    } else {
-                                        i++
-                                    }
-                                    Spacer(modifier = Modifier.height(12.dp))
-                                }
+                        if (state.result.originalText != null) {
+                            // Offline: the screen was translated as one text, so the
+                            // result cannot be mapped back to individual blocks.
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Text(
+                                    text = state.result.originalText,
+                                    fontSize = translateFontSize,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    lineHeight = translateFontSize * 1.4,
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = state.result.translation,
+                                    fontSize = translateFontSize,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    lineHeight = translateFontSize * 1.4,
+                                )
                             }
                         } else {
                             Text(

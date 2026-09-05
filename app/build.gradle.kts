@@ -67,8 +67,12 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
 
-    // ML Kit - Japanese text recognition
+    // ML Kit - text recognition, one bundle per script (~4MB APK each).
+    // The base artifact is the Latin recogniser; there is no -latin artifact.
+    implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("com.google.mlkit:text-recognition-japanese:16.0.1")
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
+    implementation("com.google.mlkit:text-recognition-korean:16.0.1")
 
     // ML Kit - On-device translation
     implementation("com.google.mlkit:translate:17.0.3")
