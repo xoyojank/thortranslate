@@ -7,6 +7,8 @@ import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.TranslatorOptions
 import com.kanjilens.data.models.AppSettings
+import com.kanjilens.data.models.TranslationPair
+import com.kanjilens.ocr.RecognizedTextBlock
 import com.kanjilens.ocr.TextRecognizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
@@ -22,8 +24,12 @@ import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 
 sealed class TranslateResult {
-    /** [original] is the recognised source text, only set by offline translation. */
-    data class Success(val text: String, val original: String? = null) : TranslateResult()
+    /** Offline translation may also include sentence-aware source/target pairs. */
+    data class Success(
+        val text: String,
+        val original: String? = null,
+        val offlineBlocks: List<TranslationPair>? = null,
+    ) : TranslateResult()
     data class Error(val message: String) : TranslateResult()
 }
 
@@ -166,10 +172,10 @@ class ScreenTranslator(
     ): TranslateResult {
         textRecognizer.setScript(AppSettings.ocrScriptFor(sourceLanguage))
 
-        val blocks = textRecognizer.recognizeTextBlocks(bitmap)
+        val recognizedBlocks = textRecognizer.recognizeStructuredTextBlocks(bitmap)
             ?: return TranslateResult.Error("No text found in screenshot")
 
-        if (blocks.isEmpty()) {
+        if (recognizedBlocks.isEmpty()) {
             return TranslateResult.Error("No text found in screenshot")
         }
 
@@ -188,41 +194,110 @@ class ScreenTranslator(
         val translator = mlKitTranslator
             ?: return TranslateResult.Error("Offline translator not available")
 
-        val originalText = blocks.joinToString("\n")
+        val translationGroups = groupForTranslation(recognizedBlocks)
+        val originalText = translationGroups.joinToString("\n")
 
         return try {
-            // Translate the whole screen as a single text so the model sees the
-            // full context. Translating block by block loses pronouns, tense and
-            // register, which is very visible in Japanese and Chinese output.
-            val translated = StringBuilder()
-            for (chunk in chunkForTranslation(blocks)) {
-                if (translated.isNotEmpty()) translated.append('\n')
-                translated.append(translator.translate(chunk).await())
+            val pairs = translationGroups.map { group ->
+                TranslationPair(
+                    original = group,
+                    translation = translateGroupPreservingLineBreaks(group, translator),
+                )
             }
+            val translated = pairs.joinToString("\n") { it.translation }
 
-            TranslateResult.Success(text = translated.toString().trim(), original = originalText)
+            TranslateResult.Success(
+                text = translated.trim(),
+                original = originalText,
+                offlineBlocks = pairs,
+            )
         } catch (e: Exception) {
             TranslateResult.Error("Offline translation failed: ${e.message ?: "unknown error"}")
         }
     }
 
+    private suspend fun translateGroupPreservingLineBreaks(
+        group: String,
+        translator: com.google.mlkit.nl.translate.Translator,
+    ): String {
+        if (!group.contains('\n')) return translator.translate(group).await()
+
+        val lineBreakMarker = '\uE000'
+        val expectedBreaks = group.count { it == '\n' }
+        val markedGroup = group.replace("\n", " $lineBreakMarker ")
+        val markedTranslation = translator.translate(markedGroup).await()
+        val translatedBreaks = markedTranslation.count { it == lineBreakMarker }
+
+        if (translatedBreaks >= expectedBreaks) {
+            return markedTranslation
+                .replace(lineBreakMarker.toString(), "\n")
+                .replace(Regex("[ \\t]*\\n[ \\t]*"), "\n")
+        }
+
+        // Some downloaded ML Kit models discard unknown marker characters. The
+        // fallback keeps the visual rows correct when that happens.
+        val translatedLines = StringBuilder()
+        for (line in group.split('\n')) {
+            if (translatedLines.isNotEmpty()) translatedLines.append('\n')
+            if (line.isNotBlank()) translatedLines.append(translator.translate(line).await())
+        }
+        return translatedLines.toString()
+    }
+
     /**
-     * Joins blocks into as few chunks as possible, splitting only once a chunk
-     * would exceed [MAX_TRANSLATE_CHARS]. Never splits inside a block.
+     * Joins OCR blocks that are likely parts of the same sentence. A block is
+     * kept separate when the previous one ends punctuation, is far away on the
+     * screen, or the group would exceed ML Kit's input limit.
      */
-    private fun chunkForTranslation(blocks: List<String>): List<String> {
-        val chunks = mutableListOf<String>()
+    private fun groupForTranslation(blocks: List<RecognizedTextBlock>): List<String> {
+        val ordered = blocks.sortedWith(
+            compareBy<RecognizedTextBlock> { it.boundingBox?.top ?: Int.MAX_VALUE }
+                .thenBy { it.boundingBox?.left ?: Int.MAX_VALUE },
+        )
+        val groups = mutableListOf<String>()
         val current = StringBuilder()
-        for (block in blocks) {
-            if (current.isNotEmpty() && current.length + block.length + 1 > MAX_TRANSLATE_CHARS) {
-                chunks.add(current.toString())
+        var previous: RecognizedTextBlock? = null
+
+        fun flush() {
+            if (current.isNotEmpty()) {
+                groups.add(current.toString())
                 current.clear()
             }
-            if (current.isNotEmpty()) current.append('\n')
-            current.append(block)
         }
-        if (current.isNotEmpty()) chunks.add(current.toString())
-        return chunks
+
+        for (block in ordered) {
+            val canJoin = previous != null &&
+                !endsSentence(previous.text) &&
+                current.length + block.text.length + 1 <= MAX_TRANSLATE_CHARS &&
+                areContinuous(previous, block)
+
+            if (!canJoin) flush()
+            if (current.isNotEmpty()) current.append('\n')
+            current.append(block.text)
+            previous = block
+
+            if (endsSentence(block.text)) flush()
+        }
+        flush()
+        return groups
+    }
+
+    private fun endsSentence(text: String): Boolean {
+        val last = text.trimEnd().lastOrNull() ?: return false
+        return last in "。！？!?…;；" || last == '.'
+    }
+
+    private fun areContinuous(previous: RecognizedTextBlock?, current: RecognizedTextBlock): Boolean {
+        val previousBox = previous?.boundingBox ?: return true
+        val currentBox = current.boundingBox ?: return true
+        val lineHeight = maxOf(previousBox.height(), currentBox.height(), 1)
+        val verticalGap = currentBox.top - previousBox.bottom
+        val horizontalShift = kotlin.math.abs(currentBox.left - previousBox.left)
+
+        // Separate columns or distant UI regions should not be merged even if
+        // OCR omitted punctuation from both labels.
+        return verticalGap <= lineHeight * 3 &&
+            horizontalShift <= maxOf(previousBox.width(), currentBox.width()) * 1.5
     }
 
     private fun callOpenAI(base64Image: String, apiKey: String, systemPrompt: String): String? {

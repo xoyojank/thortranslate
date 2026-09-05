@@ -13,10 +13,17 @@ data class AnalysisResult(
     val fullTranslation: String? = null,
 )
 
+data class TranslationPair(
+    val original: String,
+    val translation: String,
+)
+
 data class TranslationResult(
     val translation: String,
     /** Recognised source text, set when offline translation batched the screen. */
     val originalText: String? = null,
+    /** Sentence-aware offline pairs for alternating source/translated display. */
+    val offlineBlocks: List<TranslationPair>? = null,
 )
 
 sealed class CaptureState {

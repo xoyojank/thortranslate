@@ -209,7 +209,11 @@ fun MainScreen(
             )) {
                 is TranslateResult.Success -> {
                     onTranslateStateChange(CaptureState.TranslateSuccess(
-                        TranslationResult(translation = result.text, originalText = result.original)
+                        TranslationResult(
+                            translation = result.text,
+                            originalText = result.original,
+                            offlineBlocks = result.offlineBlocks,
+                        )
                     ))
                 }
                 is TranslateResult.Error -> {
@@ -264,7 +268,11 @@ fun MainScreen(
         )) {
             is TranslateResult.Success -> {
                 onTranslateStateChange(CaptureState.TranslateSuccess(
-                    TranslationResult(translation = result.text, originalText = result.original)
+                    TranslationResult(
+                            translation = result.text,
+                            originalText = result.original,
+                            offlineBlocks = result.offlineBlocks,
+                        )
                 ))
             }
             is TranslateResult.Error -> {
@@ -372,6 +380,11 @@ fun MainScreen(
                     )
                 },
                 actions = {
+                    CompactModeToggle(
+                        currentMode = appMode,
+                        onModeChange = { stopAutoMode(); settings.setAppMode(it) },
+                    )
+                    Spacer(modifier = Modifier.padding(horizontal = 3.dp))
                     // Region chip
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -505,14 +518,6 @@ fun MainScreen(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.SpaceBetween,
         ) {
-            // Mode toggle
-            ModeToggle(
-                currentMode = appMode,
-                // Leaving Translate mode must stop the auto loop, otherwise it
-                // keeps capturing and racing with the dictionary OCR.
-                onModeChange = { stopAutoMode(); settings.setAppMode(it) },
-            )
-
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -589,9 +594,29 @@ fun MainScreen(
                             AppSettings.TEXT_SIZE_LARGE -> 20.sp
                             else -> 16.sp
                         }
-                        if (state.result.originalText != null) {
-                            // Offline: the screen was translated as one text, so the
-                            // result cannot be mapped back to individual blocks.
+                        if (state.result.offlineBlocks != null) {
+                            // Offline: keep each sentence-aware source/translation
+                            // pair together so line wrapping cannot shift colors.
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                state.result.offlineBlocks.forEach { block ->
+                                    Text(
+                                        text = block.original,
+                                        fontSize = translateFontSize,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        lineHeight = translateFontSize * 1.4,
+                                    )
+                                    Text(
+                                        text = block.translation,
+                                        fontSize = translateFontSize,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        lineHeight = translateFontSize * 1.4,
+                                    )
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                }
+                            }
+                        } else if (state.result.originalText != null) {
+                            // Fallback for older persisted state without pairs.
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 Text(
                                     text = state.result.originalText,
@@ -644,62 +669,54 @@ fun MainScreen(
 }
 
 @Composable
-private fun ModeToggle(
+private fun CompactModeToggle(
     currentMode: Int,
     onModeChange: (Int) -> Unit,
 ) {
     Row(
         modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant),
+            .clip(RoundedCornerShape(6.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(2.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        ModeOption(
+        CompactModeOption(
             label = "Translate",
             selected = currentMode == AppSettings.MODE_TRANSLATE,
             onClick = { onModeChange(AppSettings.MODE_TRANSLATE) },
-            modifier = Modifier.weight(1f),
         )
-        ModeOption(
-            label = "JP Dictionary",
+        CompactModeOption(
+            label = "JP",
             selected = currentMode == AppSettings.MODE_DICTIONARY,
             onClick = { onModeChange(AppSettings.MODE_DICTIONARY) },
-            modifier = Modifier.weight(1f),
         )
     }
 }
 
 @Composable
-private fun ModeOption(
+private fun CompactModeOption(
     label: String,
     selected: Boolean,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier,
 ) {
-    val bgColor = if (selected) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.surfaceVariant
-    }
-    val textColor = if (selected) {
-        MaterialTheme.colorScheme.onPrimary
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
-    }
-
     Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(bgColor)
+        modifier = Modifier
+            .clip(RoundedCornerShape(5.dp))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.surfaceVariant,
+            )
             .clickable { onClick() }
-            .padding(vertical = 12.dp),
+            .padding(horizontal = 7.dp, vertical = 5.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = label,
-            fontSize = 15.sp,
+            fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
-            color = textColor,
+            color = if (selected) MaterialTheme.colorScheme.onPrimary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
+

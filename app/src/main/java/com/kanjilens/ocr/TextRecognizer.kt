@@ -1,6 +1,7 @@
 package com.kanjilens.ocr
 
 import android.graphics.Bitmap
+import android.graphics.Rect
 import android.util.Log
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -12,6 +13,11 @@ import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import com.kanjilens.data.models.AppSettings
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
+
+data class RecognizedTextBlock(
+    val text: String,
+    val boundingBox: Rect?,
+)
 
 /**
  * On-device OCR. ML Kit ships a separate recogniser per script, so the caller
@@ -79,24 +85,31 @@ class TextRecognizer {
             }
     }
 
-    suspend fun recognizeTextBlocks(bitmap: Bitmap): List<String>? = suspendCancellableCoroutine { continuation ->
-        val image = InputImage.fromBitmap(bitmap, 0)
+    suspend fun recognizeTextBlocks(bitmap: Bitmap): List<String>? =
+        recognizeStructuredTextBlocks(bitmap)?.map { it.text }
 
-        activeRecognizer().process(image)
-            .addOnSuccessListener { result ->
-                val blocks = result.textBlocks
-                    .map { it.text.trim() }
-                    .filter { it.isNotEmpty() }
-                if (blocks.isNotEmpty()) {
-                    continuation.resume(blocks)
-                } else {
+    suspend fun recognizeStructuredTextBlocks(bitmap: Bitmap): List<RecognizedTextBlock>? =
+        suspendCancellableCoroutine { continuation ->
+            val image = InputImage.fromBitmap(bitmap, 0)
+
+            activeRecognizer().process(image)
+                .addOnSuccessListener { result ->
+                    val blocks = result.textBlocks
+                        .mapNotNull { block ->
+                            block.text.trim().takeIf { it.isNotEmpty() }?.let {
+                                RecognizedTextBlock(it, block.boundingBox)
+                            }
+                        }
+                    if (blocks.isNotEmpty()) {
+                        continuation.resume(blocks)
+                    } else {
+                        continuation.resume(null)
+                    }
+                }
+                .addOnFailureListener {
                     continuation.resume(null)
                 }
-            }
-            .addOnFailureListener {
-                continuation.resume(null)
-            }
-    }
+        }
 
     fun close() {
         activeRecognizer().close()
