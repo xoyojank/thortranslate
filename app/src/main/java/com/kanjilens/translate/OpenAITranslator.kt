@@ -28,7 +28,7 @@ sealed class TranslateResult {
     data class Success(
         val text: String,
         val original: String? = null,
-        val offlineBlocks: List<TranslationPair>? = null,
+        val translationBlocks: List<TranslationPair>? = null,
     ) : TranslateResult()
     data class Error(val message: String) : TranslateResult()
 }
@@ -127,17 +127,86 @@ class ScreenTranslator(
                     val prompt = getSystemPrompt(style, outputLanguage)
 
                     val base64 = if (vision) bitmapToBase64(bitmap) else ""
-                    val ocrText = if (!vision) {
-                        textRecognizer.setScript(AppSettings.ocrScriptFor(sourceLanguage))
-                        textRecognizer.recognizeText(bitmap)
-                    } else null
-
-                    val result = callOpenAICompatible(base64, endpoint, key, modelName, vision, prompt, ocrText)
-                    return@withContext if (result != null) {
-                        TranslateResult.Success(result)
+                    val preferredScript = AppSettings.ocrScriptFor(sourceLanguage)
+                    textRecognizer.setScript(preferredScript)
+                    val sourceGroups = if (vision) {
+                        textRecognizer.recognizeStructuredTextBlocks(bitmap)
                     } else {
-                        TranslateResult.Error("Translation failed. Check your endpoint and model settings.")
+                        // Text-only Ollama models need OCR. Try all bundled OCR
+                        // scripts so an incorrect source-language setting does
+                        // not turn a readable screen into an empty request.
+                        textRecognizer.recognizeStructuredTextBlocksAnyScript(bitmap, preferredScript)
                     }
+                        ?.let { groupForTranslation(it) }
+                        ?.takeIf { it.isNotEmpty() }
+                    val sourceText = sourceGroups?.joinToString("\n")
+
+                    if (sourceGroups == null) {
+                        val fallbackOcrText = if (!vision) {
+                            textRecognizer.recognizeStructuredTextBlocksAnyScript(bitmap, preferredScript)
+                                ?.joinToString("\n") { it.text }
+                        } else {
+                            null
+                        }
+                        val result = callOpenAICompatible(
+                            base64Image = base64,
+                            endpoint = endpoint,
+                            apiKey = key,
+                            model = modelName,
+                            vision = vision,
+                            systemPrompt = prompt,
+                            ocrText = fallbackOcrText,
+                            focusText = fallbackOcrText,
+                        )
+                        return@withContext if (result != null) {
+                            TranslateResult.Success(text = result)
+                        } else if (!vision && fallbackOcrText == null) {
+                            TranslateResult.Error("No text found. Select the correct source language or enable vision mode.")
+                        } else {
+                            TranslateResult.Error(compatibleModelError(model))
+                        }
+                    }
+
+                    val pairs = mutableListOf<TranslationPair>()
+                    for (group in sourceGroups) {
+                        var translated = callOpenAICompatible(
+                            base64Image = base64,
+                            endpoint = endpoint,
+                            apiKey = key,
+                            model = modelName,
+                            vision = vision,
+                            systemPrompt = prompt,
+                            ocrText = group,
+                            focusText = group,
+                        )
+
+                        // Ollama's model list exposes text-only models as well as
+                        // vision models. If the default vision request is rejected,
+                        // retry the same OCR block as a text request.
+                        if (translated == null && vision) {
+                            translated = callOpenAICompatible(
+                                base64Image = "",
+                                endpoint = endpoint,
+                                apiKey = key,
+                                model = modelName,
+                                vision = false,
+                                systemPrompt = prompt,
+                                ocrText = group,
+                                focusText = group,
+                            )
+                        }
+
+                        if (translated == null) {
+                            return@withContext TranslateResult.Error(compatibleModelError(model))
+                        }
+                        pairs += TranslationPair(original = group, translation = translated)
+                    }
+
+                    return@withContext TranslateResult.Success(
+                        text = pairs.joinToString("\n") { it.translation },
+                        original = sourceText,
+                        translationBlocks = pairs,
+                    )
                 }
 
                 val base64Image = bitmapToBase64(bitmap)
@@ -151,7 +220,9 @@ class ScreenTranslator(
                 if (result != null) {
                     TranslateResult.Success(result)
                 } else {
-                    TranslateResult.Error("Translation failed. Check your API key.")
+                    TranslateResult.Error(
+                        "Cloud translation failed (model ID: $model). Check the selected provider and API key."
+                    )
                 }
             } catch (e: UnknownHostException) {
                 TranslateResult.Error("No internet connection")
@@ -209,7 +280,7 @@ class ScreenTranslator(
             TranslateResult.Success(
                 text = translated.trim(),
                 original = originalText,
-                offlineBlocks = pairs,
+                translationBlocks = pairs,
             )
         } catch (e: Exception) {
             TranslateResult.Error("Offline translation failed: ${e.message ?: "unknown error"}")
@@ -396,6 +467,12 @@ class ScreenTranslator(
             .getString("text")
     }
 
+    private fun compatibleModelError(model: Int): String = if (model == AppSettings.MODEL_OLLAMA) {
+        "Ollama request failed. Check the server address and model name. API key is not required."
+    } else {
+        "Translation failed. Check your endpoint and model settings."
+    }
+
     private fun callOpenAICompatible(
         base64Image: String,
         endpoint: String,
@@ -404,12 +481,20 @@ class ScreenTranslator(
         vision: Boolean,
         systemPrompt: String,
         ocrText: String? = null,
+        focusText: String? = null,
     ): String? {
         val userContent = if (vision) {
             JSONArray().apply {
                 put(JSONObject().apply {
                     put("type", "text")
-                    put("text", "Translate this game screen.")
+                    put(
+                        "text",
+                        if (focusText.isNullOrBlank()) {
+                            "Translate this game screen."
+                        } else {
+                            "Translate only this text block from the screen. Do not translate other visible text:\n\n$focusText"
+                        },
+                    )
                 })
                 put(JSONObject().apply {
                     put("type", "image_url")
@@ -420,7 +505,7 @@ class ScreenTranslator(
                 })
             }
         } else {
-            ocrText ?: return null
+            focusText ?: ocrText ?: return null
         }
 
         val body = JSONObject().apply {

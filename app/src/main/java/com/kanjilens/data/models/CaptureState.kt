@@ -22,8 +22,8 @@ data class TranslationResult(
     val translation: String,
     /** Recognised source text, set when offline translation batched the screen. */
     val originalText: String? = null,
-    /** Sentence-aware offline pairs for alternating source/translated display. */
-    val offlineBlocks: List<TranslationPair>? = null,
+    /** Sentence-aware pairs for alternating source/translated display. */
+    val translationBlocks: List<TranslationPair>? = null,
 )
 
 sealed class CaptureState {

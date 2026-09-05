@@ -212,7 +212,7 @@ fun MainScreen(
                         TranslationResult(
                             translation = result.text,
                             originalText = result.original,
-                            offlineBlocks = result.offlineBlocks,
+                            translationBlocks = result.translationBlocks,
                         )
                     ))
                 }
@@ -271,7 +271,7 @@ fun MainScreen(
                     TranslationResult(
                             translation = result.text,
                             originalText = result.original,
-                            offlineBlocks = result.offlineBlocks,
+                            translationBlocks = result.translationBlocks,
                         )
                 ))
             }
@@ -375,7 +375,7 @@ fun MainScreen(
             TopAppBar(
                 title = {
                     Text(
-                        text = "ThorLens",
+                        text = "ThorLens 0.3.4",
                         fontWeight = FontWeight.Bold,
                     )
                 },
@@ -594,11 +594,11 @@ fun MainScreen(
                             AppSettings.TEXT_SIZE_LARGE -> 20.sp
                             else -> 16.sp
                         }
-                        if (state.result.offlineBlocks != null) {
+                        if (state.result.translationBlocks != null) {
                             // Offline: keep each sentence-aware source/translation
                             // pair together so line wrapping cannot shift colors.
                             Column(modifier = Modifier.fillMaxWidth()) {
-                                state.result.offlineBlocks.forEach { block ->
+                                state.result.translationBlocks.forEach { block ->
                                     Text(
                                         text = block.original,
                                         fontSize = translateFontSize,

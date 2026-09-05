@@ -88,6 +88,30 @@ class TextRecognizer {
     suspend fun recognizeTextBlocks(bitmap: Bitmap): List<String>? =
         recognizeStructuredTextBlocks(bitmap)?.map { it.text }
 
+    /**
+     * Tries the preferred OCR script first, then the remaining installed
+     * scripts. Useful for text-only LLMs, which can translate any script once
+     * OCR has supplied the text.
+     */
+    suspend fun recognizeStructuredTextBlocksAnyScript(
+        bitmap: Bitmap,
+        preferredScript: String,
+    ): List<RecognizedTextBlock>? {
+        val scripts = listOf(
+            preferredScript,
+            AppSettings.SCRIPT_LATIN,
+            AppSettings.SCRIPT_JAPANESE,
+            AppSettings.SCRIPT_CHINESE,
+            AppSettings.SCRIPT_KOREAN,
+        ).distinct()
+        for (script in scripts) {
+            setScript(script)
+            val blocks = recognizeStructuredTextBlocks(bitmap)
+            if (!blocks.isNullOrEmpty()) return blocks
+        }
+        return null
+    }
+
     suspend fun recognizeStructuredTextBlocks(bitmap: Bitmap): List<RecognizedTextBlock>? =
         suspendCancellableCoroutine { continuation ->
             val image = InputImage.fromBitmap(bitmap, 0)
