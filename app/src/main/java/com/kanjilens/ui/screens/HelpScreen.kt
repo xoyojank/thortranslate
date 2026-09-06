@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.kanjilens.BuildConfig
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -139,6 +140,12 @@ fun HelpScreen(
 
             HelpDivider()
 
+            Text(
+                text = "Version ${BuildConfig.VERSION_NAME}",
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
             Text(
                 text = "Made by magiobus",
                 fontSize = 13.sp,
