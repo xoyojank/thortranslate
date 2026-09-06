@@ -120,9 +120,14 @@ class TextRecognizer {
                 .addOnSuccessListener { result ->
                     val blocks = result.textBlocks
                         .mapNotNull { block ->
-                            block.text.trim().takeIf { it.isNotEmpty() }?.let {
-                                RecognizedTextBlock(it, block.boundingBox)
-                            }
+                            // ML Kit returns visual line wraps inside a TextBlock.
+                            // They do not carry sentence meaning and must not be
+                            // preserved as translation output line breaks.
+                            block.text
+                                .replace(Regex("\\s*\\n\\s*"), " ")
+                                .trim()
+                                .takeIf { it.isNotEmpty() }
+                                ?.let { RecognizedTextBlock(it, block.boundingBox) }
                         }
                     if (blocks.isNotEmpty()) {
                         continuation.resume(blocks)

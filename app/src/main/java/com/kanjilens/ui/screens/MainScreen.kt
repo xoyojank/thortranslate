@@ -375,7 +375,7 @@ fun MainScreen(
             TopAppBar(
                 title = {
                     Text(
-                        text = "ThorLens 0.3.4",
+                        text = "ThorLens 0.3.5",
                         fontWeight = FontWeight.Bold,
                     )
                 },

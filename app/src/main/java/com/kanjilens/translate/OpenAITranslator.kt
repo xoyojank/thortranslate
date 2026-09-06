@@ -343,7 +343,11 @@ class ScreenTranslator(
                 areContinuous(previous, block)
 
             if (!canJoin) flush()
-            if (current.isNotEmpty()) current.append('\n')
+            if (current.isNotEmpty()) {
+                current.append(
+                    if (preserveSemanticLineBreak(previous, block)) '\n' else ' ',
+                )
+            }
             current.append(block.text)
             previous = block
 
@@ -356,6 +360,30 @@ class ScreenTranslator(
     private fun endsSentence(text: String): Boolean {
         val last = text.trimEnd().lastOrNull() ?: return false
         return last in "。！？!?…;；" || last == '.'
+    }
+
+    /**
+     * Keeps a line break for speaker/name labels, but turns OCR's visual wraps
+     * inside a sentence into spaces. For example, `Roland` stays above the
+     * dialogue, while `... in the` + `medical arts.` becomes one sentence.
+     */
+    private fun preserveSemanticLineBreak(
+        previous: RecognizedTextBlock?,
+        current: RecognizedTextBlock,
+    ): Boolean {
+        val previousText = previous?.text?.trim().orEmpty()
+        if (previousText.isEmpty()) return false
+
+        val isShortSingleLineLabel = previousText.length <= 32 &&
+            previousText.none { it.isWhitespace() } &&
+            !endsSentence(previousText)
+        if (isShortSingleLineLabel) return true
+
+        val previousBox = previous?.boundingBox ?: return false
+        val currentBox = current.boundingBox ?: return false
+        val lineHeight = maxOf(previousBox.height(), currentBox.height(), 1)
+        val verticalGap = currentBox.top - previousBox.bottom
+        return verticalGap > lineHeight
     }
 
     private fun areContinuous(previous: RecognizedTextBlock?, current: RecognizedTextBlock): Boolean {
