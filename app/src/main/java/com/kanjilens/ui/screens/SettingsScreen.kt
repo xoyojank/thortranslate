@@ -12,12 +12,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -40,6 +42,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kanjilens.data.models.AppSettings
+import com.kanjilens.translate.HyMt2DownloadState
+import com.kanjilens.translate.HyMt2Engine
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -47,6 +51,7 @@ import kotlinx.coroutines.launch
 fun SettingsScreen(
     settings: AppSettings,
     screenTranslator: com.kanjilens.translate.ScreenTranslator,
+    hyMt2Engine: HyMt2Engine,
     onBack: () -> Unit,
 ) {
     val textSize by settings.textSize.collectAsState()
@@ -63,6 +68,9 @@ fun SettingsScreen(
     val customVision by settings.customVision.collectAsState()
     val outputLanguage by settings.outputLanguage.collectAsState()
     val sourceLanguage by settings.sourceLanguage.collectAsState()
+    val hyMt2Threads by settings.hyMt2Threads.collectAsState()
+    val hyMt2DownloadState by hyMt2Engine.downloadState.collectAsState()
+    val hyMt2LastInferenceMillis by hyMt2Engine.lastInferenceMillis.collectAsState()
 
     var openaiKeyInput by remember { mutableStateOf(openaiApiKey) }
     var geminiKeyInput by remember { mutableStateOf(geminiApiKey) }
@@ -163,15 +171,15 @@ fun SettingsScreen(
                             modifier = Modifier.weight(1f),
                         )
                         SettingsOption(
-                            label = "Gemini",
-                            selected = aiModel == AppSettings.MODEL_GEMINI_FLASH,
-                            onClick = { settings.setAiModel(AppSettings.MODEL_GEMINI_FLASH) },
+                            label = "Offline Hy-MT2",
+                            selected = aiModel == AppSettings.MODEL_HY_MT2_LOCAL,
+                            onClick = { settings.setAiModel(AppSettings.MODEL_HY_MT2_LOCAL) },
                             modifier = Modifier.weight(1f),
                         )
                         SettingsOption(
-                            label = "GPT-4o",
-                            selected = aiModel == AppSettings.MODEL_GPT4O_MINI,
-                            onClick = { settings.setAiModel(AppSettings.MODEL_GPT4O_MINI) },
+                            label = "Gemini",
+                            selected = aiModel == AppSettings.MODEL_GEMINI_FLASH,
+                            onClick = { settings.setAiModel(AppSettings.MODEL_GEMINI_FLASH) },
                             modifier = Modifier.weight(1f),
                         )
                     }
@@ -179,6 +187,12 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
+                        SettingsOption(
+                            label = "GPT-4o",
+                            selected = aiModel == AppSettings.MODEL_GPT4O_MINI,
+                            onClick = { settings.setAiModel(AppSettings.MODEL_GPT4O_MINI) },
+                            modifier = Modifier.weight(1f),
+                        )
                         SettingsOption(
                             label = "Ollama",
                             selected = aiModel == AppSettings.MODEL_OLLAMA,
@@ -191,6 +205,93 @@ fun SettingsScreen(
                             onClick = { settings.setAiModel(AppSettings.MODEL_CUSTOM) },
                             modifier = Modifier.weight(1f),
                         )
+                    }
+                }
+                if (aiModel == AppSettings.MODEL_HY_MT2_LOCAL) {
+                    Text(
+                        text = "Experimental on-device translation. Downloads the Hy-MT2 1.8B Q4 model (~1.13 GB) from Hugging Face. Use stable Wi-Fi and keep this screen open while downloading.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                    Text(
+                        text = "CPU threads — test 4 / 6 / 8 with the same screen; changing this reloads the local model.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        listOf(4, 6, 8).forEach { threads ->
+                            SettingsOption(
+                                label = "$threads threads",
+                                selected = hyMt2Threads == threads,
+                                onClick = { settings.setHyMt2Threads(threads) },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                    hyMt2LastInferenceMillis?.let { millis ->
+                        Text(
+                            text = "Last Hy-MT2 inference: ${"%.2f".format(millis / 1000.0)} s ($hyMt2Threads threads)",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    when (val state = hyMt2DownloadState) {
+                        HyMt2DownloadState.NotInstalled -> {
+                            Button(
+                                onClick = { scope.launch { hyMt2Engine.downloadModel() } },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("Download Hy-MT2 model")
+                            }
+                        }
+                        is HyMt2DownloadState.Downloading -> {
+                            val progress = state.totalBytes?.let {
+                                (state.downloadedBytes.toFloat() / it).coerceIn(0f, 1f)
+                            }
+                            Text(
+                                text = if (progress == null) {
+                                    "Downloading ${formatModelSize(state.downloadedBytes)}..."
+                                } else {
+                                    "Downloading ${(progress * 100).toInt()}% (${formatModelSize(state.downloadedBytes)} / ${formatModelSize(state.totalBytes ?: 0L)})"
+                                },
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            LinearProgressIndicator(
+                                progress = { progress ?: 0f },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        HyMt2DownloadState.Ready -> {
+                            Text(
+                                text = "Hy-MT2 model downloaded and ready for offline translation.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            Button(
+                                onClick = { hyMt2Engine.deleteModel() },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("Delete Hy-MT2 model")
+                            }
+                        }
+                        is HyMt2DownloadState.Error -> {
+                            Text(
+                                text = state.message,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            Button(
+                                onClick = { scope.launch { hyMt2Engine.downloadModel() } },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("Retry model download")
+                            }
+                        }
                     }
                 }
                 if (aiModel == AppSettings.MODEL_MLKIT_OFFLINE || aiModel == AppSettings.MODEL_MLKIT_OFFLINE_AUTO) {
@@ -554,7 +655,7 @@ fun SettingsScreen(
                 }
             }
 
-            if (aiModel != AppSettings.MODEL_MLKIT_OFFLINE && aiModel != AppSettings.MODEL_MLKIT_OFFLINE_AUTO && aiModel != AppSettings.MODEL_OLLAMA && aiModel != AppSettings.MODEL_CUSTOM) {
+            if (aiModel != AppSettings.MODEL_MLKIT_OFFLINE && aiModel != AppSettings.MODEL_MLKIT_OFFLINE_AUTO && aiModel != AppSettings.MODEL_HY_MT2_LOCAL && aiModel != AppSettings.MODEL_OLLAMA && aiModel != AppSettings.MODEL_CUSTOM) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
 
                 // API Key
@@ -622,6 +723,13 @@ fun SettingsScreen(
         }
     }
 }
+
+private fun formatModelSize(bytes: Long): String =
+    if (bytes >= 1_000_000_000L) {
+        "${"%.2f".format(bytes / 1_000_000_000.0)} GB"
+    } else {
+        "${bytes / 1_000_000L} MB"
+    }
 
 @Composable
 private fun SettingsSection(

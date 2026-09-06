@@ -15,6 +15,7 @@ import com.kanjilens.capture.ScreenCaptureManager
 import com.kanjilens.data.models.AppSettings
 import com.kanjilens.data.models.CaptureState
 import com.kanjilens.ocr.TextRecognizer
+import com.kanjilens.translate.HyMt2Engine
 import com.kanjilens.translate.ScreenTranslator
 import com.kanjilens.ui.screens.CropScreen
 import com.kanjilens.ui.screens.HelpScreen
@@ -29,13 +30,15 @@ class MainActivity : ComponentActivity() {
     lateinit var tokenizer: JapaneseTokenizer
     lateinit var dictionary: DictionaryLookup
     lateinit var settings: AppSettings
+    lateinit var hyMt2Engine: HyMt2Engine
     lateinit var translator: ScreenTranslator
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         captureManager = ScreenCaptureManager(this)
         textRecognizer = TextRecognizer()
-        translator = ScreenTranslator(textRecognizer)
+        hyMt2Engine = HyMt2Engine(this)
+        translator = ScreenTranslator(textRecognizer, hyMt2Engine)
         tokenizer = JapaneseTokenizer()
         dictionary = DictionaryLookup(this)
         settings = AppSettings(this)
@@ -51,6 +54,7 @@ class MainActivity : ComponentActivity() {
                     "settings" -> SettingsScreen(
                         settings = settings,
                         screenTranslator = translator,
+                        hyMt2Engine = hyMt2Engine,
                         onBack = { currentScreen = "main" },
                     )
                     "help" -> HelpScreen(
@@ -96,5 +100,6 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         captureManager.release()
         textRecognizer.close()
+        hyMt2Engine.close()
     }
 }

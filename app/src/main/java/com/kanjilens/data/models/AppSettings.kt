@@ -33,6 +33,7 @@ class AppSettings(context: Context) {
         const val MODEL_MLKIT_OFFLINE_AUTO = 3
         const val MODEL_OLLAMA = 4
         const val MODEL_CUSTOM = 5
+        const val MODEL_HY_MT2_LOCAL = 6
 
         private const val KEY_OUTPUT_LANGUAGE = "output_language"
         private const val KEY_SOURCE_LANGUAGE = "source_language"
@@ -48,6 +49,7 @@ class AppSettings(context: Context) {
         private const val KEY_CUSTOM_API_KEY = "custom_api_key"
         private const val KEY_CUSTOM_MODEL = "custom_model"
         private const val KEY_CUSTOM_VISION = "custom_vision"
+        private const val KEY_HY_MT2_THREADS = "hy_mt2_threads"
 
         const val LANG_JAPANESE = "ja"
         const val LANG_ENGLISH = "en"
@@ -140,6 +142,9 @@ class AppSettings(context: Context) {
     private val _customVision = MutableStateFlow(prefs.getBoolean(KEY_CUSTOM_VISION, true))
     val customVision: StateFlow<Boolean> = _customVision
 
+    private val _hyMt2Threads = MutableStateFlow(prefs.getInt(KEY_HY_MT2_THREADS, 6))
+    val hyMt2Threads: StateFlow<Int> = _hyMt2Threads
+
     private val _appMode = MutableStateFlow(prefs.getInt(KEY_APP_MODE, MODE_TRANSLATE))
     val appMode: StateFlow<Int> = _appMode
 
@@ -193,7 +198,7 @@ class AppSettings(context: Context) {
     val activeApiKey: String
         get() = when (_aiModel.value) {
             MODEL_GEMINI_FLASH -> _geminiApiKey.value
-            MODEL_MLKIT_OFFLINE, MODEL_MLKIT_OFFLINE_AUTO -> ""
+            MODEL_MLKIT_OFFLINE, MODEL_MLKIT_OFFLINE_AUTO, MODEL_HY_MT2_LOCAL -> ""
             MODEL_OLLAMA -> ""
             MODEL_CUSTOM -> _customApiKey.value
             else -> _openaiApiKey.value
@@ -272,5 +277,11 @@ class AppSettings(context: Context) {
     fun setCustomVision(vision: Boolean) {
         _customVision.value = vision
         prefs.edit().putBoolean(KEY_CUSTOM_VISION, vision).apply()
+    }
+
+    fun setHyMt2Threads(threads: Int) {
+        require(threads in setOf(4, 6, 8)) { "Hy-MT2 threads must be 4, 6, or 8" }
+        _hyMt2Threads.value = threads
+        prefs.edit().putInt(KEY_HY_MT2_THREADS, threads).apply()
     }
 }

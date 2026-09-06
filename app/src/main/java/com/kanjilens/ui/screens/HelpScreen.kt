@@ -94,6 +94,7 @@ fun HelpScreen(
             HelpBullet("Offline Auto", "Same as Offline, but captures and translates automatically every second. Only re-translates when the text on screen changes. Press Stop to go back to manual mode.")
             HelpBullet("Gemini 2.5 Flash", "By Google. Free tier available — great to get started.")
             HelpBullet("GPT-4o mini", "By OpenAI. Reliable and fast.")
+            HelpBullet("Hy-MT2 Local", "Experimental on-device translation. Requires a separately side-loaded 1.13GB Q4 model file.")
             Spacer(modifier = Modifier.height(4.dp))
             HelpBody("Switch models from the top bar or in Settings. Offline is the default.")
 

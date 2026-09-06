@@ -92,10 +92,11 @@ fun MainScreen(
     val geminiKey by settings.geminiApiKey.collectAsState()
     val outputLanguage by settings.outputLanguage.collectAsState()
     val sourceLanguage by settings.sourceLanguage.collectAsState()
+    val hyMt2Threads by settings.hyMt2Threads.collectAsState()
     val cropEnabled by settings.cropEnabled.collectAsState()
     val apiKey = when (aiModel) {
         AppSettings.MODEL_GEMINI_FLASH -> geminiKey
-        AppSettings.MODEL_MLKIT_OFFLINE, AppSettings.MODEL_MLKIT_OFFLINE_AUTO -> ""
+        AppSettings.MODEL_MLKIT_OFFLINE, AppSettings.MODEL_MLKIT_OFFLINE_AUTO, AppSettings.MODEL_HY_MT2_LOCAL -> ""
         AppSettings.MODEL_OLLAMA -> ""
         AppSettings.MODEL_CUSTOM -> customApiKey
         else -> openaiKey
@@ -179,6 +180,7 @@ fun MainScreen(
         scope.launch {
             val needsKey = aiModel != AppSettings.MODEL_MLKIT_OFFLINE &&
                 aiModel != AppSettings.MODEL_MLKIT_OFFLINE_AUTO &&
+                aiModel != AppSettings.MODEL_HY_MT2_LOCAL &&
                 aiModel != AppSettings.MODEL_OLLAMA
             if (needsKey && apiKey.isBlank()) {
                 onTranslateStateChange(CaptureState.Error("Add your API key in Settings"))
@@ -198,7 +200,11 @@ fun MainScreen(
             when (val result = translator.translateScreen(
                 bitmap, apiKey, translateStyle, aiModel, outputLanguage,
                 sourceLanguage = sourceLanguage,
+                hyMt2Threads = hyMt2Threads,
                 onDownloading = { onTranslateStateChange(CaptureState.DownloadingModel) },
+                onPartial = { partial ->
+                    scope.launch { onTranslateStateChange(CaptureState.Streaming(partial)) }
+                },
                 ollamaUrl = settings.ollamaUrl.value,
                 ollamaModel = settings.ollamaModel.value,
                 ollamaVision = settings.ollamaVision.value,
@@ -365,6 +371,7 @@ fun MainScreen(
         AppSettings.MODEL_GEMINI_FLASH -> "Gemini"
         AppSettings.MODEL_MLKIT_OFFLINE -> "Offline"
         AppSettings.MODEL_MLKIT_OFFLINE_AUTO -> "Auto"
+        AppSettings.MODEL_HY_MT2_LOCAL -> "Hy-MT2"
         AppSettings.MODEL_OLLAMA -> if (ollamaModel.isNotEmpty()) ollamaModel else "Ollama"
         AppSettings.MODEL_CUSTOM -> if (customModel.isNotEmpty()) customModel else "Custom"
         else -> "GPT-4o"
@@ -451,6 +458,14 @@ fun MainScreen(
                                         val intent = captureManager.projectionManager.createScreenCaptureIntent()
                                         projectionLauncher.launch(intent)
                                     }
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Hy-MT2 Local (experimental)") },
+                                onClick = {
+                                    stopAutoMode()
+                                    settings.setAiModel(AppSettings.MODEL_HY_MT2_LOCAL)
+                                    modelMenuExpanded = false
                                 },
                             )
                             DropdownMenuItem(
@@ -557,7 +572,9 @@ fun MainScreen(
                     is CaptureState.Processing -> {
                         val langName = AppSettings.languageDisplayName(outputLanguage)
                         val label = if (appMode == AppSettings.MODE_TRANSLATE) {
-                            if (aiModel == AppSettings.MODEL_MLKIT_OFFLINE || aiModel == AppSettings.MODEL_MLKIT_OFFLINE_AUTO) {
+                            if (aiModel == AppSettings.MODEL_HY_MT2_LOCAL) {
+                                "Translating locally with Hy-MT2..."
+                            } else if (aiModel == AppSettings.MODEL_MLKIT_OFFLINE || aiModel == AppSettings.MODEL_MLKIT_OFFLINE_AUTO) {
                                 "Translating to $langName..."
                             } else {
                                 val modelName = when (aiModel) {
@@ -588,17 +605,22 @@ fun MainScreen(
                             textSize = textSize,
                         )
                     }
-                    is CaptureState.TranslateSuccess -> {
+                    is CaptureState.TranslateSuccess, is CaptureState.Streaming -> {
+                        val translationResult = when (state) {
+                            is CaptureState.TranslateSuccess -> state.result
+                            is CaptureState.Streaming -> state.result
+                            else -> error("Unexpected translation state")
+                        }
                         val translateFontSize = when (textSize) {
                             AppSettings.TEXT_SIZE_SMALL -> 14.sp
                             AppSettings.TEXT_SIZE_LARGE -> 20.sp
                             else -> 16.sp
                         }
-                        if (state.result.translationBlocks != null) {
+                        if (translationResult.translationBlocks != null) {
                             // Offline: keep each sentence-aware source/translation
                             // pair together so line wrapping cannot shift colors.
                             Column(modifier = Modifier.fillMaxWidth()) {
-                                state.result.translationBlocks.forEach { block ->
+                                translationResult.translationBlocks.forEach { block ->
                                     Text(
                                         text = block.original,
                                         fontSize = translateFontSize,
@@ -615,11 +637,11 @@ fun MainScreen(
                                     Spacer(modifier = Modifier.height(12.dp))
                                 }
                             }
-                        } else if (state.result.originalText != null) {
+                        } else if (translationResult.originalText != null) {
                             // Fallback for older persisted state without pairs.
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 Text(
-                                    text = state.result.originalText,
+                                    text = translationResult.originalText,
                                     fontSize = translateFontSize,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     lineHeight = translateFontSize * 1.4,
@@ -628,7 +650,7 @@ fun MainScreen(
                                 HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text(
-                                    text = state.result.translation,
+                                    text = translationResult.translation,
                                     fontSize = translateFontSize,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.primary,
@@ -637,7 +659,7 @@ fun MainScreen(
                             }
                         } else {
                             Text(
-                                text = state.result.translation,
+                                text = translationResult.translation,
                                 fontSize = translateFontSize,
                                 color = MaterialTheme.colorScheme.onSurface,
                                 lineHeight = translateFontSize * 1.5,
@@ -658,7 +680,8 @@ fun MainScreen(
             CaptureButton(
                 isProcessing = captureState is CaptureState.Capturing
                     || captureState is CaptureState.DownloadingModel
-                    || captureState is CaptureState.Processing,
+                    || captureState is CaptureState.Processing
+                    || captureState is CaptureState.Streaming,
                 onClick = { onCaptureClick() },
                 modifier = Modifier.padding(bottom = 16.dp),
                 isAutoMode = isAutoMode,

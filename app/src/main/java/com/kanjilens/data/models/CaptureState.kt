@@ -32,6 +32,7 @@ sealed class CaptureState {
     data object DownloadingModel : CaptureState()
     data object Processing : CaptureState()
     data class DictionarySuccess(val result: AnalysisResult) : CaptureState()
+    data class Streaming(val result: TranslationResult) : CaptureState()
     data class TranslateSuccess(val result: TranslationResult) : CaptureState()
     data class Error(val message: String) : CaptureState()
 }

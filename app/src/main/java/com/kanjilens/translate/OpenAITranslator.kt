@@ -8,6 +8,7 @@ import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.TranslatorOptions
 import com.kanjilens.data.models.AppSettings
 import com.kanjilens.data.models.TranslationPair
+import com.kanjilens.data.models.TranslationResult as UiTranslationResult
 import com.kanjilens.ocr.RecognizedTextBlock
 import com.kanjilens.ocr.TextRecognizer
 import kotlinx.coroutines.Dispatchers
@@ -35,6 +36,7 @@ sealed class TranslateResult {
 
 class ScreenTranslator(
     private val textRecognizer: TextRecognizer,
+    private val hyMt2Engine: HyMt2Engine,
 ) {
 
     companion object {
@@ -107,10 +109,22 @@ class ScreenTranslator(
         customApiKey: String = "",
         customModel: String = "",
         customVision: Boolean = true,
+        hyMt2Threads: Int = 6,
         onDownloading: (() -> Unit)? = null,
+        onPartial: ((UiTranslationResult) -> Unit)? = null,
     ): TranslateResult {
         return withContext(Dispatchers.IO) {
             try {
+                if (model == AppSettings.MODEL_HY_MT2_LOCAL) {
+                    return@withContext translateWithHyMt2(
+                        bitmap,
+                        sourceLanguage,
+                        outputLanguage,
+                        hyMt2Threads,
+                        onPartial,
+                    )
+                }
+
                 if (model == AppSettings.MODEL_MLKIT_OFFLINE || model == AppSettings.MODEL_MLKIT_OFFLINE_AUTO) {
                     return@withContext translateOffline(bitmap, sourceLanguage, outputLanguage, onDownloading)
                 }
@@ -232,6 +246,57 @@ class ScreenTranslator(
                 e.printStackTrace()
                 TranslateResult.Error("Translation failed: ${e.message ?: "unknown error"}")
             }
+        }
+    }
+
+    private suspend fun translateWithHyMt2(
+        bitmap: Bitmap,
+        sourceLanguage: String,
+        outputLanguage: String,
+        threads: Int,
+        onPartial: ((UiTranslationResult) -> Unit)?,
+    ): TranslateResult {
+        if (!hyMt2Engine.isModelAvailable) {
+            return TranslateResult.Error(
+                "Hy-MT2 model not found. Copy Hy-MT2-1.8B-Q4_K_M.gguf to ${hyMt2Engine.modelPath.parent}."
+            )
+        }
+
+        val preferredScript = AppSettings.ocrScriptFor(sourceLanguage)
+        val blocks = textRecognizer.recognizeStructuredTextBlocksAnyScript(bitmap, preferredScript)
+            ?: return TranslateResult.Error("No text found in screenshot")
+        val groups = groupForTranslation(blocks)
+        if (groups.isEmpty()) return TranslateResult.Error("No text found in screenshot")
+
+        return try {
+            val targetLanguage = AppSettings.languageDisplayName(outputLanguage)
+            val pairs = mutableListOf<TranslationPair>()
+            for (group in groups) {
+                val partialTranslation = StringBuilder()
+                val translation = hyMt2Engine.translate(
+                    sourceText = group,
+                    targetLanguage = targetLanguage,
+                    threads = threads,
+                    onPartial = { token ->
+                        partialTranslation.append(token)
+                        onPartial?.invoke(
+                            UiTranslationResult(
+                                translation = (pairs.map { it.translation } + partialTranslation.toString()).joinToString("\n"),
+                                originalText = (pairs.map { it.original } + group).joinToString("\n"),
+                                translationBlocks = pairs + TranslationPair(group, partialTranslation.toString()),
+                            )
+                        )
+                    },
+                )
+                pairs += TranslationPair(original = group, translation = translation)
+            }
+            TranslateResult.Success(
+                text = pairs.joinToString("\n") { it.translation },
+                original = pairs.joinToString("\n") { it.original },
+                translationBlocks = pairs,
+            )
+        } catch (e: Exception) {
+            TranslateResult.Error("Hy-MT2 translation failed: ${e.message ?: "unknown error"}")
         }
     }
 
