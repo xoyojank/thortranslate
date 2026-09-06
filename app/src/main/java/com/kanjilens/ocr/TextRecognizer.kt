@@ -118,16 +118,19 @@ class TextRecognizer {
 
             activeRecognizer().process(image)
                 .addOnSuccessListener { result ->
+                    // A text block can contain several separate dialogue boxes.
+                    // Use ML Kit's visual lines instead so sentence grouping can
+                    // split a finished dialogue line from the next one, while the
+                    // translator still recombines display-wrapped line fragments.
                     val blocks = result.textBlocks
-                        .mapNotNull { block ->
-                            // ML Kit returns visual line wraps inside a TextBlock.
-                            // They do not carry sentence meaning and must not be
-                            // preserved as translation output line breaks.
-                            block.text
-                                .replace(Regex("\\s*\\n\\s*"), " ")
-                                .trim()
-                                .takeIf { it.isNotEmpty() }
-                                ?.let { RecognizedTextBlock(it, block.boundingBox) }
+                        .flatMap { block ->
+                            block.lines.mapNotNull { line ->
+                                line.text
+                                    .replace(Regex("\\s+"), " ")
+                                    .trim()
+                                    .takeIf { it.isNotEmpty() }
+                                    ?.let { RecognizedTextBlock(it, line.boundingBox ?: block.boundingBox) }
+                            }
                         }
                     if (blocks.isNotEmpty()) {
                         continuation.resume(blocks)

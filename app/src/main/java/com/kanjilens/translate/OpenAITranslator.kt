@@ -338,7 +338,7 @@ class ScreenTranslator(
 
         for (block in ordered) {
             val canJoin = previous != null &&
-                !endsSentence(previous.text) &&
+                (!endsSentence(previous.text) || isTightVisualContinuation(previous, block)) &&
                 current.length + block.text.length + 1 <= MAX_TRANSLATE_CHARS &&
                 areContinuous(previous, block)
 
@@ -360,6 +360,22 @@ class ScreenTranslator(
     private fun endsSentence(text: String): Boolean {
         val last = text.trimEnd().lastOrNull() ?: return false
         return last in "。！？!?…;；" || last == '.'
+    }
+
+    /**
+     * A full stop does not always end a dialogue box: OCR may split a long box
+     * exactly after its first sentence. Join only when the next visual line is
+     * immediately adjacent; separate dialogue boxes have a larger vertical gap.
+     */
+    private fun isTightVisualContinuation(
+        previous: RecognizedTextBlock?,
+        current: RecognizedTextBlock,
+    ): Boolean {
+        val previousBox = previous?.boundingBox ?: return false
+        val currentBox = current.boundingBox ?: return false
+        val lineHeight = maxOf(previousBox.height(), currentBox.height(), 1)
+        val verticalGap = currentBox.top - previousBox.bottom
+        return verticalGap <= lineHeight
     }
 
     /**
